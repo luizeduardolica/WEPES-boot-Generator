@@ -1,0 +1,10 @@
+# Somente código-fonte no repositório
+PES 6 PC/
+PES PS2/
+WEPES BOOT GENERATOR V1/
+build/
+dist/
+*.spec
+__pycache__/
+*.pyc
+.claude/
