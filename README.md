@@ -8,13 +8,13 @@ Baixe o executável na página de [Releases](https://github.com/luizeduardolica/
 
 ## Como usar
 
-1. Arraste as chuteiras do PES 6 PC (arquivos ou uma pasta inteira) para a lista.
+1. Arraste as chuteiras do PES 6 PC para a lista, ou use **Abrir pasta (com subpastas)**: o programa lê a pasta principal e todas as subpastas (por exemplo, uma pasta por marca) e encontra todas as imagens.
 2. Escolha o modo da paleta:
    - **Gerar paleta nova**: cria uma paleta de 256 cores otimizada para todas as chuteiras da lista.
    - **Usar paleta carregada + preencher slots livres**: carregue a paleta das chuteiras que já estão no jogo (botão *Carregar paleta…*). As cores existentes não mudam de índice, então as chuteiras antigas continuam corretas. Só os índices livres recebem as cores novas.
    - **Usar SOMENTE as cores da paleta carregada**: a paleta não muda nada. É o ideal para trocar só uma chuteira sem mexer na paleta do jogo.
 3. Clique em **Converter**, confira o antes/depois e o ΔE de cada chuteira.
-4. Clique em **Salvar PNGs PS2**. As imagens (e a paleta em `.act`, `.pal` e `.png`) são salvas na pasta de saída.
+4. Clique em **Salvar PNGs PS2** e escolha onde criar a nova pasta. Ela recebe a mesma estrutura de subpastas da pasta aberta (ex.: `Chuteiras PS2/Nike/...`, `Chuteiras PS2/Adidas/...`), junto com a paleta em `.act`, `.pal` e `.png`.
 
 ### Dicas
 

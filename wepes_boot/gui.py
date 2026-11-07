@@ -14,7 +14,7 @@ from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QListWidget, 
                                QLabel, QPushButton, QHBoxLayout, QVBoxLayout, QGroupBox,
                                QRadioButton, QSlider, QCheckBox, QComboBox, QFileDialog,
                                QMessageBox, QProgressBar, QSplitter, QLineEdit, QScrollArea,
-                               QButtonGroup, QToolBar, QStyle, QSizePolicy)
+                               QButtonGroup, QToolBar, QInputDialog, QStyle, QSizePolicy)
 
 from . import __version__
 from .quantize import (ConvertOptions, Palette, prepare_image, build_palette, remap, quality,
@@ -45,8 +45,12 @@ def checker_pixmap(w: int, h: int, cell: int = 8) -> QPixmap:
 
 
 class BootItem:
-    def __init__(self, path: str):
+    def __init__(self, path: str, root: str | None = None):
         self.path = path
+        # root = pasta principal aberta; rel_dir = subpasta (ex.: marca) relativa a ela
+        self.root = os.path.normpath(root or os.path.dirname(path))
+        rel = os.path.relpath(os.path.dirname(path), self.root)
+        self.rel_dir = "" if rel == "." else rel
         self.name = os.path.splitext(os.path.basename(path))[0]
         with Image.open(path) as im:
             im.load()
@@ -248,7 +252,9 @@ class MainWindow(QMainWindow):
             tb.addAction(a)
             return a
 
-        act("Adicionar chuteiras", QStyle.SP_DialogOpenButton, self.add_dialog)
+        act("Adicionar chuteiras", QStyle.SP_FileIcon, self.add_dialog)
+        act("Abrir pasta (com subpastas)", QStyle.SP_DirOpenIcon, self.add_folder_dialog,
+            "Lê a pasta principal e TODAS as subpastas (ex.: uma pasta por marca) procurando chuteiras")
         act("Remover", QStyle.SP_TrashIcon, self.remove_selected, "Remove as chuteiras selecionadas")
         act("Limpar", QStyle.SP_DialogResetButton, self.clear_all)
         tb.addSeparator()
@@ -359,15 +365,10 @@ class MainWindow(QMainWindow):
 
         g_out = QGroupBox("Saída")
         ol = QVBoxLayout(g_out)
-        orow = QHBoxLayout()
-        self.ed_out = QLineEdit(self.settings.value("outdir", ""))
-        self.ed_out.setPlaceholderText("(padrão: subpasta 'PS2' ao lado das imagens)")
-        b = QPushButton("…")
-        b.setFixedWidth(30)
-        b.clicked.connect(self.choose_outdir)
-        orow.addWidget(self.ed_out, 1)
-        orow.addWidget(b)
-        ol.addLayout(orow)
+        out_hint = QLabel("<small>Ao salvar, você escolhe onde criar a nova pasta. Ela terá a mesma "
+                          "estrutura de subpastas (marcas) da pasta aberta.</small>")
+        out_hint.setWordWrap(True)
+        ol.addWidget(out_hint)
         srow = QHBoxLayout()
         srow.addWidget(QLabel("Sufixo do nome:"))
         self.ed_suffix = QLineEdit(self.settings.value("suffix", ""))
@@ -407,30 +408,52 @@ class MainWindow(QMainWindow):
             self.settings.setValue("indir", os.path.dirname(files[0]))
             self.add_paths(files)
 
+    def add_folder_dialog(self):
+        d = QFileDialog.getExistingDirectory(self, "Abrir pasta principal (todas as subpastas serão lidas)",
+                                             self.settings.value("indir", ""))
+        if d:
+            self.settings.setValue("indir", d)
+            self.add_paths([d])
+
     def add_paths(self, paths):
-        files = []
+        files = []  # (arquivo, pasta raiz)
         for p in paths:
+            p = os.path.normpath(p)
             if os.path.isdir(p):
-                for f in sorted(os.listdir(p)):
-                    if f.lower().endswith(IMAGE_EXTS):
-                        files.append(os.path.join(p, f))
+                # busca recursiva: pasta principal -> pastas das marcas -> imagens
+                for dirpath, dirnames, filenames in os.walk(p):
+                    dirnames[:] = sorted(d for d in dirnames if not d.startswith("."))
+                    for f in sorted(filenames):
+                        if f.lower().endswith(IMAGE_EXTS):
+                            files.append((os.path.join(dirpath, f), p))
             elif p.lower().endswith(IMAGE_EXTS):
-                files.append(p)
-        known = {it.path for it in self.items}
+                files.append((p, None))
+        known = {os.path.normcase(it.path) for it in self.items}
         errors = []
-        for f in files:
-            if f in known:
+        self.progress.setVisible(True)
+        self.progress.setRange(0, max(1, len(files)))
+        for n, (f, root) in enumerate(files):
+            if os.path.normcase(f) in known:
                 continue
+            if n % 10 == 0:
+                self.progress.setValue(n)
+                self.statusBar().showMessage(f"Carregando {n + 1}/{len(files)}: {os.path.basename(f)}")
+                QApplication.processEvents()
             try:
-                it = BootItem(f)
+                it = BootItem(f, root)
             except Exception as ex:
-                errors.append(f"{os.path.basename(f)}: {ex}")
+                errors.append(f"{os.path.relpath(f, root) if root else os.path.basename(f)}: {ex}")
                 continue
             self.items.append(it)
+            known.add(os.path.normcase(f))
             li = QListWidgetItem(self._icon_for(it.source), self._item_text(it))
+            li.setToolTip(it.path)
             self.list.addItem(li)
+        self.progress.setVisible(False)
+        folders = len({(it.root, it.rel_dir) for it in self.items})
+        self.statusBar().showMessage(f"{len(self.items)} chuteiras em {folders} pasta(s).")
         if errors:
-            QMessageBox.warning(self, "Arquivos ignorados", "\n".join(errors))
+            QMessageBox.warning(self, "Arquivos ignorados", "\n".join(errors[:40]))
         self._invalidate()
         if self.list.currentRow() < 0 and self.items:
             self.list.setCurrentRow(0)
@@ -442,7 +465,10 @@ class MainWindow(QMainWindow):
 
     def _item_text(self, it: BootItem):
         w, h = it.source.size
-        s = f"{it.name}\n{w}x{h}"
+        s = f"{it.name}\n"
+        if it.rel_dir:
+            s += f"Pasta: {it.rel_dir}\n"
+        s += f"{w}x{h}"
         if (w, h) == (170, 256):
             s += " (PES 6 PC)"
         elif (w, h) == (256, 256):
@@ -606,8 +632,8 @@ class MainWindow(QMainWindow):
             it.prepared, it.indices, it.metrics = prep, idx, met
             self.list.item(i).setText(self._item_text(it))
         used_total = int(pal.locked.sum()) - 1
-        worst = max(results, key=lambda r: r[2]["delta_e"])
-        wi = results.index(worst)
+        wi = max(range(len(results)), key=lambda k: results[k][2]["delta_e"])
+        worst = results[wi]
         msg = (f"Pronto: {len(results)} chuteiras com a mesma paleta ({used_total} cores). "
                f"Pior caso: {self.items[wi].name} (ΔE {worst[2]['delta_e']:.2f}).")
         if self._mode() == "extend" and self.loaded_palette is not None:
@@ -625,41 +651,62 @@ class MainWindow(QMainWindow):
         self.progress.setVisible(False)
 
     # ---------------------------------------------------------------- saída
-    def choose_outdir(self):
-        d = QFileDialog.getExistingDirectory(self, "Pasta de saída", self.ed_out.text())
-        if d:
-            self.ed_out.setText(d)
-
     def save_outputs(self):
         if self.result_palette is None or any(it.indices is None for it in self.items):
             if not self.items:
                 return
             QMessageBox.information(self, "Salvar", "Clique em Converter antes de salvar.")
             return
-        out = self.ed_out.text().strip() or os.path.join(os.path.dirname(self.items[0].path), "PS2")
-        os.makedirs(out, exist_ok=True)
+        dest = QFileDialog.getExistingDirectory(
+            self, "Onde criar a nova pasta com as chuteiras PS2?",
+            self.settings.value("savedir", os.path.dirname(self.items[0].root)))
+        if not dest:
+            return
+        self.settings.setValue("savedir", dest)
         suffix = self.ed_suffix.text()
-        self.settings.setValue("outdir", self.ed_out.text())
         self.settings.setValue("suffix", suffix)
-        existing = [it for it in self.items
-                    if os.path.exists(os.path.join(out, it.name + suffix + ".png"))]
+
+        # uma pasta nova para cada pasta principal aberta, com a mesma estrutura de subpastas
+        roots = list(dict.fromkeys(it.root for it in self.items))
+        out_for_root = {}
+        for root in roots:
+            default = (os.path.basename(root) or "Chuteiras") + " PS2"
+            if len(roots) == 1:
+                name, ok = QInputDialog.getText(self, "Nome da nova pasta",
+                                                f"A nova pasta será criada em:\n{dest}\n\nNome:",
+                                                text=default)
+                if not ok or not name.strip():
+                    return
+                default = name.strip()
+            out_for_root[root] = os.path.join(dest, default)
+
+        targets = [(it, os.path.join(out_for_root[it.root], it.rel_dir, it.name + suffix + ".png"))
+                   for it in self.items]
+        existing = [t for _, t in targets if os.path.exists(t)]
         if existing:
             r = QMessageBox.question(self, "Sobrescrever?",
-                                     f"{len(existing)} arquivo(s) já existem em\n{out}\nSobrescrever?")
+                                     f"{len(existing)} arquivo(s) já existem no destino. Sobrescrever?")
             if r != QMessageBox.Yes:
                 return
-        for it in self.items:
-            save_png(it.indices, self.result_palette, os.path.join(out, it.name + suffix + ".png"))
-        if self.cb_save_pal.isChecked():
-            for ext in (".act", ".pal", ".png"):
-                save_palette(self.result_palette, os.path.join(out, "_paleta_chuteiras" + ext))
-        self.statusBar().showMessage(f"{len(self.items)} chuteiras salvas em {out}", 8000)
-        if sys.platform == "win32":
-            r = QMessageBox.information(self, "Concluído",
-                                        f"{len(self.items)} chuteiras PS2 (256x256, 8 bits) salvas em:\n{out}",
-                                        QMessageBox.Open | QMessageBox.Ok)
-            if r == QMessageBox.Open:
-                os.startfile(out)
+        try:
+            for it, t in targets:
+                os.makedirs(os.path.dirname(t), exist_ok=True)
+                save_png(it.indices, self.result_palette, t)
+            if self.cb_save_pal.isChecked():
+                for out in out_for_root.values():
+                    for ext in (".act", ".pal", ".png"):
+                        save_palette(self.result_palette, os.path.join(out, "_paleta_chuteiras" + ext))
+        except OSError as ex:
+            QMessageBox.critical(self, "Erro ao salvar", str(ex))
+            return
+        outs = list(out_for_root.values())
+        n_dirs = len({os.path.dirname(t) for _, t in targets})
+        self.statusBar().showMessage(f"{len(targets)} chuteiras salvas em {n_dirs} pasta(s).", 8000)
+        r = QMessageBox.information(self, "Concluído",
+                                    f"{len(targets)} chuteiras PS2 (256x256, 8 bits) salvas em {n_dirs} pasta(s):\n"
+                                    + "\n".join(outs), QMessageBox.Open | QMessageBox.Ok)
+        if r == QMessageBox.Open and sys.platform == "win32":
+            os.startfile(outs[0])
 
 
 def main():
